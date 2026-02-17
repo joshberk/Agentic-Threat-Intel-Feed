@@ -1,0 +1,182 @@
+"""
+notifier.py — Delivers enriched items to Slack and/or Email.
+
+Both channels are stub-safe: if the relevant credential is not configured the
+function prints what *would* be sent and returns without error. Wire in the
+real credentials via .env when ready.
+"""
+
+import smtplib
+import ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+import httpx
+
+import config
+
+# ── Severity labels ───────────────────────────────────────────────────────────
+def _severity_label(score: int) -> str:
+    if score >= 9:
+        return "CRITICAL"
+    if score >= 7:
+        return "HIGH"
+    if score >= 5:
+        return "MEDIUM"
+    if score >= 1:
+        return "LOW"
+    return "UNSCORED"
+
+
+def _severity_emoji(score: int) -> str:
+    return {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢", "UNSCORED": "⚪"}[
+        _severity_label(score)
+    ]
+
+
+# ── Slack ─────────────────────────────────────────────────────────────────────
+def _slack_payload(item: dict) -> dict:
+    score  = item.get("severity", 0)
+    label  = _severity_label(score)
+    emoji  = _severity_emoji(score)
+    topics = ", ".join(item.get("topics", [])) or "general"
+
+    return {
+        "blocks": [
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"{emoji} *{label}* | _{item['source']}_\n"
+                        f"*<{item['url']}|{item['title']}>*\n"
+                        f"{item.get('summary', '')}"
+                    ),
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Topics: {topics}  |  Score: {score}/10",
+                    }
+                ],
+            },
+        ]
+    }
+
+
+async def send_slack(item: dict) -> None:
+    """Post a single item to the configured Slack webhook."""
+    if not config.SLACK_WEBHOOK_URL:
+        score = item.get("severity", "?")
+        print(
+            f"[notifier/slack] STUB — [{score}/10] {_severity_label(int(score or 0))} "
+            f"| {item['source']} | {item['title']}"
+        )
+        return
+
+    payload = _slack_payload(item)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(config.SLACK_WEBHOOK_URL, json=payload)
+            if resp.status_code != 200:
+                print(f"[notifier/slack] HTTP {resp.status_code}: {resp.text}")
+    except Exception as exc:
+        print(f"[notifier/slack] Error: {exc}")
+
+
+# ── Email ─────────────────────────────────────────────────────────────────────
+_EMAIL_ROW_TEMPLATE = """
+<tr>
+  <td style="padding:14px 8px;border-bottom:1px solid #e5e7eb;font-family:sans-serif;">
+    <span style="font-size:12px;font-weight:bold;color:{color};">{emoji} {label}</span>
+    &nbsp;·&nbsp;
+    <span style="font-size:12px;color:#6b7280;">{source}</span><br>
+    <a href="{url}" style="font-size:15px;font-weight:bold;color:#1d4ed8;text-decoration:none;">
+      {title}
+    </a><br>
+    <p style="margin:6px 0 4px;font-size:13px;color:#374151;">{summary}</p>
+    <span style="font-size:11px;color:#9ca3af;">Topics: {topics} &nbsp;|&nbsp; Score: {score}/10</span>
+  </td>
+</tr>
+"""
+
+_SEVERITY_COLORS = {
+    "CRITICAL": "#dc2626",
+    "HIGH":     "#ea580c",
+    "MEDIUM":   "#ca8a04",
+    "LOW":      "#16a34a",
+    "UNSCORED": "#6b7280",
+}
+
+
+def _email_html(items: list[dict]) -> str:
+    rows = ""
+    for item in items:
+        score  = item.get("severity", 0)
+        label  = _severity_label(score)
+        rows  += _EMAIL_ROW_TEMPLATE.format(
+            color   = _SEVERITY_COLORS[label],
+            emoji   = _severity_emoji(score),
+            label   = label,
+            source  = item["source"],
+            url     = item["url"],
+            title   = item["title"],
+            summary = item.get("summary", ""),
+            topics  = ", ".join(item.get("topics", [])) or "general",
+            score   = score,
+        )
+
+    return f"""
+<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:20px;background:#f9fafb;">
+  <table cellpadding="0" cellspacing="0"
+         style="max-width:680px;margin:0 auto;background:#fff;border-radius:8px;
+                border:1px solid #e5e7eb;overflow:hidden;">
+    <tr>
+      <td style="padding:20px 16px;background:#1e293b;">
+        <h2 style="margin:0;color:#fff;font-family:sans-serif;font-size:18px;">
+          🛡️ Cybersecurity Threat Intelligence
+        </h2>
+        <p style="margin:4px 0 0;color:#94a3b8;font-family:sans-serif;font-size:13px;">
+          {len(items)} new item(s) above severity threshold
+        </p>
+      </td>
+    </tr>
+    {rows}
+    <tr>
+      <td style="padding:12px 16px;font-family:sans-serif;font-size:11px;color:#9ca3af;">
+        Powered by Claude · CyberAgent MVP
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+
+def send_email(items: list[dict]) -> None:
+    """Send a digest email containing all notifiable items."""
+    if not config.SMTP_HOST:
+        print(f"[notifier/email] STUB — would send digest of {len(items)} item(s)")
+        return
+
+    try:
+        msg             = MIMEMultipart("alternative")
+        msg["Subject"]  = f"[CyberAgent] {len(items)} new threat intel item(s)"
+        msg["From"]     = config.EMAIL_FROM
+        msg["To"]       = config.EMAIL_TO
+        msg.attach(MIMEText(_email_html(items), "html"))
+
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT) as server:
+            server.starttls(context=ctx)
+            server.login(config.SMTP_USER, config.SMTP_PASS)
+            server.sendmail(config.EMAIL_FROM, config.EMAIL_TO, msg.as_string())
+
+        print(f"[notifier/email] Digest sent ({len(items)} items)")
+    except Exception as exc:
+        print(f"[notifier/email] Error: {exc}")

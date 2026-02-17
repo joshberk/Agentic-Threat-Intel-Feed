@@ -1,0 +1,19 @@
+# Credentials — never commit
+.env
+
+# SQLite database (runtime state)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# macOS
+.DS_Store
