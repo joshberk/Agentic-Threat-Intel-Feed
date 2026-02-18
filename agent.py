@@ -1,5 +1,5 @@
 """
-agent.py — Cybersecurity Threat Intelligence Agent (MVP)
+agent.py — Agentic Threat Intel Feed
 
 Orchestration loop:
   collect → deduplicate → enrich (Claude) → notify (Slack + Email)
@@ -24,7 +24,7 @@ from notifier import send_email, send_slack
 
 def _banner() -> None:
     print("=" * 60)
-    print("  🛡️  Cybersecurity Threat Intelligence Agent — MVP")
+    print("  🛡️  Agentic Threat Intel Feed")
     print("=" * 60)
     print(f"  Poll interval : {config.POLL_INTERVAL_SECONDS}s")
     print(f"  Sev threshold : {config.SEVERITY_THRESHOLD}/10")

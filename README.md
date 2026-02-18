@@ -1,4 +1,4 @@
-# Cybersecurity Threat Intelligence Agent
+# Agentic Threat Intel Feed
 
 An automated agent that continuously monitors cybersecurity news sources, uses Claude AI to triage and score threats, and delivers real-time alerts to Slack and email.
 

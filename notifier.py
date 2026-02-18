@@ -140,7 +140,7 @@ def _email_html(items: list[dict]) -> str:
     <tr>
       <td style="padding:20px 16px;background:#1e293b;">
         <h2 style="margin:0;color:#fff;font-family:sans-serif;font-size:18px;">
-          🛡️ Cybersecurity Threat Intelligence
+          🛡️ Agentic Threat Intel Feed
         </h2>
         <p style="margin:4px 0 0;color:#94a3b8;font-family:sans-serif;font-size:13px;">
           {len(items)} new item(s) above severity threshold
@@ -150,7 +150,7 @@ def _email_html(items: list[dict]) -> str:
     {rows}
     <tr>
       <td style="padding:12px 16px;font-family:sans-serif;font-size:11px;color:#9ca3af;">
-        Powered by Claude · CyberAgent MVP
+        Powered by Claude · Agentic Threat Intel Feed
       </td>
     </tr>
   </table>
@@ -166,7 +166,7 @@ def send_email(items: list[dict]) -> None:
 
     try:
         msg             = MIMEMultipart("alternative")
-        msg["Subject"]  = f"[CyberAgent] {len(items)} new threat intel item(s)"
+        msg["Subject"]  = f"[Agentic Threat Intel] {len(items)} new threat intel item(s)"
         msg["From"]     = config.EMAIL_FROM
         msg["To"]       = config.EMAIL_TO
         msg.attach(MIMEText(_email_html(items), "html"))
