@@ -1,0 +1,39 @@
+name: Threat Intelligence Agent
+
+on:
+  schedule:
+    # Runs every 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # allows manual trigger from GitHub UI
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Restore the dedup database from cache so we don't re-process old items
+      - name: Restore dedup DB cache
+        uses: actions/cache@v4
+        with:
+          path: data/seen_items.db
+          # Single persistent key — the cache updates in-place each run
+          key: dedup-db
+
+      - name: Run single cycle
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DAILY_COST_LIMIT_USD: '1.00'
+          SEVERITY_THRESHOLD: '6'
+          POLL_INTERVAL_SECONDS: '600'
+        run: python agent.py --once

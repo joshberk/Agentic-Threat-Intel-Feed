@@ -12,6 +12,7 @@ Slack and Email notifiers print stubs when credentials are not yet configured.
 """
 
 import asyncio
+import sys
 from datetime import datetime
 
 import config
@@ -75,11 +76,17 @@ async def run_cycle() -> None:
     print(f"[{ts}] Cycle complete — {len(to_notify)} notification(s) sent.\n")
 
 
-async def main() -> None:
+async def main(once: bool = False) -> None:
     _banner()
 
     if not config.ANTHROPIC_API_KEY:
         print("[agent] ERROR: ANTHROPIC_API_KEY is not set. Add it to your .env file.")
+        return
+
+    if once:
+        # Single cycle mode (for GitHub Actions / cron)
+        await run_cycle()
+        print("[agent] Single cycle complete.")
         return
 
     while True:
@@ -96,7 +103,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    once = "--once" in sys.argv
     try:
-        asyncio.run(main())
+        asyncio.run(main(once=once))
     except KeyboardInterrupt:
         print("\n[agent] Goodbye.")
