@@ -2,8 +2,8 @@ name: Threat Intelligence Agent
 
 on:
   schedule:
-    # Runs every 10 minutes
-    - cron: '*/10 * * * *'
+    # Runs every 30 minutes, 6am–10pm UTC (fits GitHub free tier)
+    - cron: '*/30 6-22 * * *'
   workflow_dispatch: # allows manual trigger from GitHub UI
 
 jobs:
