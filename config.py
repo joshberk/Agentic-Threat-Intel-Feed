@@ -29,6 +29,9 @@ POLL_INTERVAL_SECONDS: int = int(os.getenv("POLL_INTERVAL_SECONDS", "300"))
 # Minimum Claude severity score (1–10) required before a notification is sent.
 SEVERITY_THRESHOLD: int = int(os.getenv("SEVERITY_THRESHOLD", "6"))
 
+# Maximum daily spend on Claude API calls (USD). Agent skips enrichment once hit.
+DAILY_COST_LIMIT_USD: str = os.getenv("DAILY_COST_LIMIT_USD", "1.00")
+
 # Path to the SQLite deduplication database.
 DB_PATH: str = os.getenv("DB_PATH", "data/seen_items.db")
 

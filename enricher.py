@@ -11,15 +11,29 @@ Items are processed in batches of BATCH_SIZE to keep prompts manageable and
 control API costs. Irrelevant items are discarded. If the API call fails the
 batch is passed through with severity=0 so the main agent can still decide
 what to do with them (they will fall below the threshold and not be notified).
+
+A daily cost tracker prevents spending more than DAILY_COST_LIMIT_USD.
 """
 
 import json
+from datetime import date
 
 import anthropic
 
 import config
 
 BATCH_SIZE = 15
+
+# Sonnet 4.5 pricing per token
+_INPUT_COST_PER_TOKEN = 3.0 / 1_000_000    # $3 per 1M input tokens
+_OUTPUT_COST_PER_TOKEN = 15.0 / 1_000_000  # $15 per 1M output tokens
+
+# Daily spend cap (configurable via .env, defaults to $1.00)
+DAILY_COST_LIMIT_USD = float(config.DAILY_COST_LIMIT_USD)
+
+# In-memory daily cost tracker (resets when the date changes)
+_today: str = ""
+_today_cost: float = 0.0
 
 _client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -59,6 +73,36 @@ Schema per object:
 }}"""
 
 
+def _track_cost(response) -> float:
+    """Update daily cost tracker and return the cost of this API call."""
+    global _today, _today_cost
+
+    current_date = date.today().isoformat()
+    if _today != current_date:
+        _today = current_date
+        _today_cost = 0.0
+
+    input_tokens = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
+    cost = (input_tokens * _INPUT_COST_PER_TOKEN) + (output_tokens * _OUTPUT_COST_PER_TOKEN)
+    _today_cost += cost
+
+    print(f"[enricher] Cost: ${cost:.4f} (today: ${_today_cost:.4f} / ${DAILY_COST_LIMIT_USD:.2f})")
+    return cost
+
+
+def _budget_remaining() -> bool:
+    """Return True if we still have budget for today."""
+    global _today, _today_cost
+
+    current_date = date.today().isoformat()
+    if _today != current_date:
+        _today = current_date
+        _today_cost = 0.0
+
+    return _today_cost < DAILY_COST_LIMIT_USD
+
+
 def _build_user_prompt(items: list[dict]) -> str:
     lines: list[str] = []
     for idx, item in enumerate(items):
@@ -84,6 +128,11 @@ def enrich(items: list[dict]) -> list[dict]:
 
     for batch_start in range(0, len(items), BATCH_SIZE):
         batch = items[batch_start : batch_start + BATCH_SIZE]
+
+        if not _budget_remaining():
+            print(f"[enricher] Daily budget of ${DAILY_COST_LIMIT_USD:.2f} reached — skipping remaining batches")
+            break
+
         try:
             response = _client.messages.create(
                 model="claude-sonnet-4-5-20250929",
@@ -91,6 +140,8 @@ def enrich(items: list[dict]) -> list[dict]:
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": _build_user_prompt(batch)}],
             )
+            _track_cost(response)
+
             raw_text = response.content[0].text
             # Strip markdown code fences if Claude wraps the JSON
             cleaned = raw_text.strip()
