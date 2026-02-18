@@ -16,6 +16,8 @@ from datetime import datetime, timezone, timedelta
 import feedparser
 import httpx
 
+import config
+
 # ── RSS sources ───────────────────────────────────────────────────────────────
 RSS_FEEDS: list[dict] = [
     {"name": "TheHackerNews",   "url": "https://feeds.feedburner.com/TheHackersNews"},
@@ -76,8 +78,11 @@ async def fetch_nvd_cves(client: httpx.AsyncClient) -> list[dict]:
         "https://services.nvd.nist.gov/rest/json/cves/2.0"
         f"?pubStartDate={start.strftime(fmt)}&pubEndDate={now.strftime(fmt)}"
     )
+    headers = {}
+    if config.NVD_API_KEY:
+        headers["apiKey"] = config.NVD_API_KEY
     try:
-        resp = await client.get(url, timeout=20)
+        resp = await client.get(url, headers=headers, timeout=20)
         data = resp.json()
         for vuln in data.get("vulnerabilities", [])[:20]:
             cve    = vuln.get("cve", {})

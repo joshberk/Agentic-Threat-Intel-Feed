@@ -17,6 +17,9 @@ SMTP_PASS: str = os.getenv("SMTP_PASS", "")
 EMAIL_FROM: str = os.getenv("EMAIL_FROM", "")
 EMAIL_TO: str = os.getenv("EMAIL_TO", "")
 
+# ── NVD ─────────────────────────────────────────────────────────────────────
+NVD_API_KEY: str = os.getenv("NVD_API_KEY", "")
+
 # ── Reddit (fill in after MVP) ───────────────────────────────────────────────
 REDDIT_CLIENT_ID: str = os.getenv("REDDIT_CLIENT_ID", "")
 REDDIT_CLIENT_SECRET: str = os.getenv("REDDIT_CLIENT_SECRET", "")
