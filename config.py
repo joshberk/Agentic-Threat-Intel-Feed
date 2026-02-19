@@ -38,6 +38,16 @@ DAILY_COST_LIMIT_USD: str = os.getenv("DAILY_COST_LIMIT_USD", "1.00")
 # Path to the SQLite deduplication database.
 DB_PATH: str = os.getenv("DB_PATH", "data/seen_items.db")
 
+# ── Adaptive polling ───────────────────────────────────────────────────────────
+# Number of high-severity items in a cycle that triggers spike mode.
+SPIKE_TRIGGER_COUNT: int = int(os.getenv("SPIKE_TRIGGER_COUNT", "3"))
+# Minimum severity score that counts toward the spike trigger.
+SPIKE_SEVERITY_MIN: int = int(os.getenv("SPIKE_SEVERITY_MIN", "8"))
+# Poll interval (seconds) during a spike (default: 1 minute).
+SPIKE_POLL_SECONDS: int = int(os.getenv("SPIKE_POLL_SECONDS", "60"))
+# How long (seconds) to stay in spike mode after a spike is detected (default: 2 hours).
+SPIKE_DURATION_SECONDS: int = int(os.getenv("SPIKE_DURATION_SECONDS", "7200"))
+
 # Topics Claude uses to judge relevance and to tag each item.
 TOPICS: list[str] = [
     "vulnerabilities", "CVE", "zero-day", "exploit",

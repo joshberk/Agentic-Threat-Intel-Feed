@@ -13,7 +13,7 @@ Slack and Email notifiers print stubs when credentials are not yet configured.
 
 import asyncio
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 import config
 from collector import collect_all
@@ -35,7 +35,11 @@ def _banner() -> None:
     print()
 
 
-async def run_cycle() -> None:
+async def run_cycle() -> int:
+    """
+    Run one collect→deduplicate→enrich→notify cycle.
+    Returns the number of high-severity items found (used for adaptive polling).
+    """
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] ── Cycle start ──────────────────────────────────────")
 
@@ -49,7 +53,7 @@ async def run_cycle() -> None:
 
     if not new_items:
         print(f"[{ts}] Nothing new — sleeping until next cycle.\n")
-        return
+        return 0
 
     # 3. Enrich via Claude
     enriched = enrich(new_items)
@@ -65,7 +69,7 @@ async def run_cycle() -> None:
 
     if not to_notify:
         print(f"[{ts}] No items above threshold — sleeping until next cycle.\n")
-        return
+        return 0
 
     # 5. Send to Slack (one message per item for real-time feel)
     await asyncio.gather(*[send_slack(item) for item in to_notify])
@@ -74,6 +78,9 @@ async def run_cycle() -> None:
     send_email(to_notify)
 
     print(f"[{ts}] Cycle complete — {len(to_notify)} notification(s) sent.\n")
+
+    # Return count of high-severity items for adaptive polling
+    return sum(1 for i in to_notify if i.get("severity", 0) >= config.SPIKE_SEVERITY_MIN)
 
 
 async def main(once: bool = False) -> None:
@@ -89,17 +96,44 @@ async def main(once: bool = False) -> None:
         print("[agent] Single cycle complete.")
         return
 
+    spike_until: datetime | None = None  # when spike mode expires
+
     while True:
         try:
-            await run_cycle()
+            high_sev_count = await run_cycle()
         except KeyboardInterrupt:
             print("\n[agent] Interrupted — shutting down.")
             break
         except Exception as exc:
             print(f"[agent] Unhandled cycle error: {exc}")
+            high_sev_count = 0
 
-        print(f"[agent] Sleeping {config.POLL_INTERVAL_SECONDS}s …")
-        await asyncio.sleep(config.POLL_INTERVAL_SECONDS)
+        now = datetime.now(timezone.utc)
+
+        # Activate spike mode if enough high-severity items were found
+        if high_sev_count >= config.SPIKE_TRIGGER_COUNT:
+            spike_until = datetime.fromtimestamp(
+                now.timestamp() + config.SPIKE_DURATION_SECONDS, tz=timezone.utc
+            )
+            print(
+                f"[agent] ⚡ SPIKE MODE — {high_sev_count} high-severity items detected. "
+                f"Polling every {config.SPIKE_POLL_SECONDS}s for "
+                f"{config.SPIKE_DURATION_SECONDS // 60} min."
+            )
+
+        # Determine sleep interval
+        if spike_until and now < spike_until:
+            sleep_for = config.SPIKE_POLL_SECONDS
+            remaining = int((spike_until.timestamp() - now.timestamp()) / 60)
+            print(f"[agent] Spike mode active ({remaining} min remaining) — sleeping {sleep_for}s …")
+        else:
+            if spike_until and now >= spike_until:
+                print("[agent] Spike mode expired — returning to normal polling.")
+                spike_until = None
+            sleep_for = config.POLL_INTERVAL_SECONDS
+            print(f"[agent] Sleeping {sleep_for}s …")
+
+        await asyncio.sleep(sleep_for)
 
 
 if __name__ == "__main__":
