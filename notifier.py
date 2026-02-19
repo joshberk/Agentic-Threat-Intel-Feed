@@ -1,19 +1,39 @@
 """
 notifier.py — Delivers enriched items to Slack and/or Email.
 
+Security hardening:
+  • html.escape() on all external fields rendered into email HTML
+  • _safe_url() rejects javascript: and data: URI schemes
+  • Credentials never logged — Slack webhook URL excluded from error messages
+
 Both channels are stub-safe: if the relevant credential is not configured the
-function prints what *would* be sent and returns without error. Wire in the
+function logs what *would* be sent and returns without error. Wire in the
 real credentials via .env when ready.
 """
 
+import html
+import logging
 import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from urllib.parse import urlparse
 
 import httpx
 
 import config
+
+log = logging.getLogger(__name__)
+
+# ── URL sanitisation ──────────────────────────────────────────────────────────
+
+def _safe_url(url: str) -> str:
+    """Return url only if it uses http/https; otherwise return '#' to prevent XSS."""
+    parsed = urlparse(url)
+    if parsed.scheme in ("http", "https"):
+        return url
+    return "#"
+
 
 # ── Severity labels ───────────────────────────────────────────────────────────
 def _severity_label(score: int) -> str:
@@ -51,7 +71,7 @@ def _slack_payload(item: dict) -> dict:
                 "text": (
                     f"{emoji} *{label}* | _{item['source']}_"
                     f"{' | 🔬 _Deep Dive_' if is_deep else ''}\n"
-                    f"*<{item['url']}|{item['title']}>*\n"
+                    f"*<{_safe_url(item['url'])}|{item['title']}>*\n"
                     f"{item.get('deep_summary') or item.get('summary', '')}"
                 ),
             },
@@ -96,9 +116,9 @@ async def send_slack(item: dict) -> None:
     """Post a single item to the configured Slack webhook."""
     if not config.SLACK_WEBHOOK_URL:
         score = item.get("severity", "?")
-        print(
-            f"[notifier/slack] STUB — [{score}/10] {_severity_label(int(score or 0))} "
-            f"| {item['source']} | {item['title']}"
+        log.info(
+            "Slack STUB — [%s/10] %s | %s | %s",
+            score, _severity_label(int(score or 0)), item["source"], item["title"],
         )
         return
 
@@ -107,9 +127,12 @@ async def send_slack(item: dict) -> None:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(config.SLACK_WEBHOOK_URL, json=payload)
             if resp.status_code != 200:
-                print(f"[notifier/slack] HTTP {resp.status_code}: {resp.text}")
+                # Log status only — never log the webhook URL
+                log.error("Slack webhook returned HTTP %s", resp.status_code)
+    except httpx.TimeoutException:
+        log.error("Slack webhook timed out")
     except Exception as exc:
-        print(f"[notifier/slack] Error: {exc}")
+        log.error("Slack webhook error: %s", type(exc).__name__)
 
 
 # ── Email ─────────────────────────────────────────────────────────────────────
@@ -145,12 +168,12 @@ def _email_html(items: list[dict]) -> str:
         rows  += _EMAIL_ROW_TEMPLATE.format(
             color   = _SEVERITY_COLORS[label],
             emoji   = _severity_emoji(score),
-            label   = label,
-            source  = item["source"],
-            url     = item["url"],
-            title   = item["title"],
-            summary = item.get("summary", ""),
-            topics  = ", ".join(item.get("topics", [])) or "general",
+            label   = html.escape(label),
+            source  = html.escape(item["source"]),
+            url     = _safe_url(item["url"]),
+            title   = html.escape(item["title"]),
+            summary = html.escape(item.get("summary", "")),
+            topics  = html.escape(", ".join(item.get("topics", [])) or "general"),
             score   = score,
         )
 
@@ -185,7 +208,7 @@ def _email_html(items: list[dict]) -> str:
 def send_email(items: list[dict]) -> None:
     """Send a digest email containing all notifiable items."""
     if not config.SMTP_HOST:
-        print(f"[notifier/email] STUB — would send digest of {len(items)} item(s)")
+        log.info("Email STUB — would send digest of %d item(s)", len(items))
         return
 
     try:
@@ -201,6 +224,6 @@ def send_email(items: list[dict]) -> None:
             server.login(config.SMTP_USER, config.SMTP_PASS)
             server.sendmail(config.EMAIL_FROM, config.EMAIL_TO, msg.as_string())
 
-        print(f"[notifier/email] Digest sent ({len(items)} items)")
+        log.info("Email digest sent (%d items)", len(items))
     except Exception as exc:
-        print(f"[notifier/email] Error: {exc}")
+        log.error("Email send error: %s", type(exc).__name__)

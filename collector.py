@@ -1,6 +1,11 @@
 """
 collector.py — Fetches raw news items from all configured sources.
 
+Security hardening:
+  • follow_redirects=False — prevents TLS-downgrade redirect attacks
+  • Sequential RSS fetching with 500 ms delay — basic rate limiting
+  • Typed exception handling — avoids swallowing unexpected errors silently
+
 Sources (MVP):
   • RSS feeds  — TheHackerNews, BleepingComputer, KrebsOnSecurity,
                   DarkReading, Threatpost, SANS ISC
@@ -11,12 +16,15 @@ Reddit is stubbed; it will be wired in once credentials are available.
 """
 
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 
 import feedparser
 import httpx
 
 import config
+
+log = logging.getLogger(__name__)
 
 # ── RSS sources ───────────────────────────────────────────────────────────────
 RSS_FEEDS: list[dict] = [
@@ -55,15 +63,23 @@ def _nvd_cvss_score(cve: dict) -> float | None:
 
 # ── Fetchers ──────────────────────────────────────────────────────────────────
 async def fetch_rss_feeds(client: httpx.AsyncClient) -> list[dict]:
+    """Fetch RSS feeds sequentially with a short delay to avoid hammering sources."""
     items: list[dict] = []
     for feed in RSS_FEEDS:
         try:
             resp = await client.get(feed["url"], timeout=15)
+            resp.raise_for_status()
             parsed = feedparser.parse(resp.text)
             for entry in parsed.entries[:RSS_ITEMS_PER_FEED]:
                 items.append(_normalize_rss(entry, feed["name"]))
+        except httpx.TimeoutException:
+            log.warning("RSS timeout [%s]", feed["name"])
+        except httpx.HTTPStatusError as exc:
+            log.warning("RSS HTTP %s [%s]", exc.response.status_code, feed["name"])
         except Exception as exc:
-            print(f"[collector] RSS error [{feed['name']}]: {exc}")
+            log.error("RSS unexpected error [%s]: %s", feed["name"], type(exc).__name__)
+        # Polite delay between feeds — basic rate limiting
+        await asyncio.sleep(0.5)
     return items
 
 
@@ -83,6 +99,7 @@ async def fetch_nvd_cves(client: httpx.AsyncClient) -> list[dict]:
         headers["apiKey"] = config.NVD_API_KEY
     try:
         resp = await client.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
         data = resp.json()
         for vuln in data.get("vulnerabilities", [])[:20]:
             cve    = vuln.get("cve", {})
@@ -103,8 +120,12 @@ async def fetch_nvd_cves(client: httpx.AsyncClient) -> list[dict]:
                 "content":    desc,
                 "cvss_score": score,
             })
+    except httpx.TimeoutException:
+        log.warning("NVD fetch timed out")
+    except httpx.HTTPStatusError as exc:
+        log.warning("NVD HTTP %s", exc.response.status_code)
     except Exception as exc:
-        print(f"[collector] NVD error: {exc}")
+        log.error("NVD unexpected error: %s", type(exc).__name__)
     return items
 
 
@@ -114,6 +135,7 @@ async def fetch_cisa_kev(client: httpx.AsyncClient) -> list[dict]:
     url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
     try:
         resp  = await client.get(url, timeout=20)
+        resp.raise_for_status()
         vulns = resp.json().get("vulnerabilities", [])
         # Most recently added first
         vulns = sorted(vulns, key=lambda v: v.get("dateAdded", ""), reverse=True)[:20]
@@ -133,8 +155,12 @@ async def fetch_cisa_kev(client: httpx.AsyncClient) -> list[dict]:
                 "published": v.get("dateAdded", ""),
                 "content":   content,
             })
+    except httpx.TimeoutException:
+        log.warning("CISA KEV fetch timed out")
+    except httpx.HTTPStatusError as exc:
+        log.warning("CISA KEV HTTP %s", exc.response.status_code)
     except Exception as exc:
-        print(f"[collector] CISA KEV error: {exc}")
+        log.error("CISA KEV unexpected error: %s", type(exc).__name__)
     return items
 
 
@@ -144,16 +170,23 @@ async def fetch_reddit(client: httpx.AsyncClient) -> list[dict]:
     Subreddits: r/netsec, r/cybersecurity, r/hacking
     """
     # TODO: implement once REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are set.
-    print("[collector] Reddit: skipped (credentials not configured)")
+    log.debug("Reddit: skipped (credentials not configured)")
     return []
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 async def collect_all() -> list[dict]:
-    """Run all collectors in parallel and return a flat list of raw items."""
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        rss, nvd, cisa, reddit = await asyncio.gather(
-            fetch_rss_feeds(client),
+    """
+    Run collectors and return a flat list of raw items.
+
+    RSS feeds are fetched sequentially (with polite delays) using a shared client.
+    NVD and CISA are fetched concurrently after RSS completes.
+    follow_redirects=False prevents TLS-downgrade redirect attacks.
+    """
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        # RSS is sequential to rate-limit; NVD + CISA run in parallel
+        rss = await fetch_rss_feeds(client)
+        nvd, cisa, reddit = await asyncio.gather(
             fetch_nvd_cves(client),
             fetch_cisa_kev(client),
             fetch_reddit(client),

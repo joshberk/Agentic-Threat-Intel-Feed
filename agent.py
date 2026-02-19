@@ -8,10 +8,13 @@ Run:
   python agent.py
 
 Credentials are loaded from .env  (see .env.example).
-Slack and Email notifiers print stubs when credentials are not yet configured.
+Slack and Email notifiers log stubs when credentials are not yet configured.
 """
 
 import asyncio
+import logging
+import logging.handlers
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -22,6 +25,43 @@ from deep_diver import deep_dive
 from enricher import enrich
 from notifier import send_email, send_slack
 
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+
+_URL_RE = re.compile(
+    r"https?://[^\s\"'<>]+"
+    r"|hooks\.slack\.com/[^\s\"'<>]+"
+    r"|sk-ant-[A-Za-z0-9\-]+"
+)
+
+
+class _RedactingFormatter(logging.Formatter):
+    """Strip URLs and API keys from log records before emitting."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        original = super().format(record)
+        return _URL_RE.sub("<redacted>", original)
+
+
+def _configure_logging() -> None:
+    fmt = _RedactingFormatter(
+        fmt="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(fmt)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    # Avoid duplicate handlers if called more than once (e.g. in tests)
+    if not root.handlers:
+        root.addHandler(handler)
+
+
+log = logging.getLogger(__name__)
+
+
+# ── Banner ────────────────────────────────────────────────────────────────────
 
 def _banner() -> None:
     print("=" * 60)
@@ -42,23 +82,23 @@ async def run_cycle() -> int:
     Returns the number of high-severity items found (used for adaptive polling).
     """
     ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[{ts}] ── Cycle start ──────────────────────────────────────")
+    log.info("── Cycle start ──────────────────────────────────────")
 
     # 1. Collect
     raw = await collect_all()
-    print(f"[{ts}] Collected   : {len(raw)} raw items")
+    log.info("Collected   : %d raw items", len(raw))
 
     # 2. Deduplicate
     new_items = filter_new(raw)
-    print(f"[{ts}] New (unseen): {len(new_items)} items")
+    log.info("New (unseen): %d items", len(new_items))
 
     if not new_items:
-        print(f"[{ts}] Nothing new — sleeping until next cycle.\n")
+        log.info("Nothing new — sleeping until next cycle.")
         return 0
 
     # 3. Enrich via Claude
     enriched = enrich(new_items)
-    print(f"[{ts}] Relevant    : {len(enriched)} items after Claude triage")
+    log.info("Relevant    : %d items after Claude triage", len(enriched))
 
     # Mark everything collected as seen now, regardless of relevance,
     # so we never re-send the same raw item.
@@ -66,17 +106,20 @@ async def run_cycle() -> int:
 
     # 4. Apply severity threshold
     to_notify = [i for i in enriched if i.get("severity", 0) >= config.SEVERITY_THRESHOLD]
-    print(f"[{ts}] To notify   : {len(to_notify)} items at or above threshold {config.SEVERITY_THRESHOLD}/10")
+    log.info(
+        "To notify   : %d items at or above threshold %d/10",
+        len(to_notify), config.SEVERITY_THRESHOLD,
+    )
 
     if not to_notify:
-        print(f"[{ts}] No items above threshold — sleeping until next cycle.\n")
+        log.info("No items above threshold — sleeping until next cycle.")
         return 0
 
     # 5. Autonomous deep dive on high-severity items
     to_notify = await deep_dive(to_notify)
     deep_count = sum(1 for i in to_notify if i.get("deep_dive"))
     if deep_count:
-        print(f"[{ts}] Deep dives  : {deep_count} item(s) analysed in depth")
+        log.info("Deep dives  : %d item(s) analysed in depth", deep_count)
 
     # 6. Send to Slack (one message per item for real-time feel)
     await asyncio.gather(*[send_slack(item) for item in to_notify])
@@ -84,23 +127,24 @@ async def run_cycle() -> int:
     # 7. Send email digest (batched)
     send_email(to_notify)
 
-    print(f"[{ts}] Cycle complete — {len(to_notify)} notification(s) sent.\n")
+    log.info("Cycle complete — %d notification(s) sent.", len(to_notify))
 
     # Return count of high-severity items for adaptive polling
     return sum(1 for i in to_notify if i.get("severity", 0) >= config.SPIKE_SEVERITY_MIN)
 
 
 async def main(once: bool = False) -> None:
+    _configure_logging()
     _banner()
 
     if not config.ANTHROPIC_API_KEY:
-        print("[agent] ERROR: ANTHROPIC_API_KEY is not set. Add it to your .env file.")
+        log.error("ANTHROPIC_API_KEY is not set. Add it to your .env file.")
         return
 
     if once:
         # Single cycle mode (for GitHub Actions / cron)
         await run_cycle()
-        print("[agent] Single cycle complete.")
+        log.info("Single cycle complete.")
         return
 
     spike_until: datetime | None = None  # when spike mode expires
@@ -109,10 +153,10 @@ async def main(once: bool = False) -> None:
         try:
             high_sev_count = await run_cycle()
         except KeyboardInterrupt:
-            print("\n[agent] Interrupted — shutting down.")
+            log.info("Interrupted — shutting down.")
             break
         except Exception as exc:
-            print(f"[agent] Unhandled cycle error: {exc}")
+            log.error("Unhandled cycle error: %s", type(exc).__name__)
             high_sev_count = 0
 
         now = datetime.now(timezone.utc)
@@ -122,23 +166,24 @@ async def main(once: bool = False) -> None:
             spike_until = datetime.fromtimestamp(
                 now.timestamp() + config.SPIKE_DURATION_SECONDS, tz=timezone.utc
             )
-            print(
-                f"[agent] ⚡ SPIKE MODE — {high_sev_count} high-severity items detected. "
-                f"Polling every {config.SPIKE_POLL_SECONDS}s for "
-                f"{config.SPIKE_DURATION_SECONDS // 60} min."
+            log.info(
+                "⚡ SPIKE MODE — %d high-severity items detected. "
+                "Polling every %ds for %d min.",
+                high_sev_count, config.SPIKE_POLL_SECONDS,
+                config.SPIKE_DURATION_SECONDS // 60,
             )
 
         # Determine sleep interval
         if spike_until and now < spike_until:
             sleep_for = config.SPIKE_POLL_SECONDS
             remaining = int((spike_until.timestamp() - now.timestamp()) / 60)
-            print(f"[agent] Spike mode active ({remaining} min remaining) — sleeping {sleep_for}s …")
+            log.info("Spike mode active (%d min remaining) — sleeping %ds …", remaining, sleep_for)
         else:
             if spike_until and now >= spike_until:
-                print("[agent] Spike mode expired — returning to normal polling.")
+                log.info("Spike mode expired — returning to normal polling.")
                 spike_until = None
             sleep_for = config.POLL_INTERVAL_SECONDS
-            print(f"[agent] Sleeping {sleep_for}s …")
+            log.info("Sleeping %ds …", sleep_for)
 
         await asyncio.sleep(sleep_for)
 
