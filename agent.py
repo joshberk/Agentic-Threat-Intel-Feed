@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import config
 from collector import collect_all
 from deduplicator import filter_new, mark_seen
+from deep_diver import deep_dive
 from enricher import enrich
 from notifier import send_email, send_slack
 
@@ -71,10 +72,16 @@ async def run_cycle() -> int:
         print(f"[{ts}] No items above threshold — sleeping until next cycle.\n")
         return 0
 
-    # 5. Send to Slack (one message per item for real-time feel)
+    # 5. Autonomous deep dive on high-severity items
+    to_notify = await deep_dive(to_notify)
+    deep_count = sum(1 for i in to_notify if i.get("deep_dive"))
+    if deep_count:
+        print(f"[{ts}] Deep dives  : {deep_count} item(s) analysed in depth")
+
+    # 6. Send to Slack (one message per item for real-time feel)
     await asyncio.gather(*[send_slack(item) for item in to_notify])
 
-    # 6. Send email digest (batched)
+    # 7. Send email digest (batched)
     send_email(to_notify)
 
     print(f"[{ts}] Cycle complete — {len(to_notify)} notification(s) sent.\n")

@@ -40,32 +40,56 @@ def _slack_payload(item: dict) -> dict:
     label  = _severity_label(score)
     emoji  = _severity_emoji(score)
     topics = ", ".join(item.get("topics", [])) or "general"
+    is_deep = item.get("deep_dive", False)
 
-    return {
-        "blocks": [
-            {"type": "divider"},
-            {
+    blocks = [
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"{emoji} *{label}* | _{item['source']}_"
+                    f"{' | 🔬 _Deep Dive_' if is_deep else ''}\n"
+                    f"*<{item['url']}|{item['title']}>*\n"
+                    f"{item.get('deep_summary') or item.get('summary', '')}"
+                ),
+            },
+        },
+    ]
+
+    # Deep dive extra fields
+    if is_deep:
+        details: list[str] = []
+        if item.get("affected_products"):
+            details.append("*Affected:* " + ", ".join(item["affected_products"][:5]))
+        if item.get("cve_ids"):
+            details.append("*CVEs:* " + ", ".join(item["cve_ids"]))
+        if item.get("threat_actor"):
+            details.append(f"*Actor:* {item['threat_actor']}")
+        if item.get("mitigations"):
+            mits = "\n".join(f"• {m}" for m in item["mitigations"][:4])
+            details.append(f"*Mitigations:*\n{mits}")
+        if item.get("iocs"):
+            details.append("*IOCs:* " + ", ".join(item["iocs"][:6]))
+
+        if details:
+            blocks.append({
                 "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        f"{emoji} *{label}* | _{item['source']}_\n"
-                        f"*<{item['url']}|{item['title']}>*\n"
-                        f"{item.get('summary', '')}"
-                    ),
-                },
-            },
+                "text": {"type": "mrkdwn", "text": "\n".join(details)},
+            })
+
+    blocks.append({
+        "type": "context",
+        "elements": [
             {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"Topics: {topics}  |  Score: {score}/10",
-                    }
-                ],
-            },
-        ]
-    }
+                "type": "mrkdwn",
+                "text": f"Topics: {topics}  |  Score: {score}/10",
+            }
+        ],
+    })
+
+    return {"blocks": blocks}
 
 
 async def send_slack(item: dict) -> None:

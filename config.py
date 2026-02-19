@@ -38,6 +38,12 @@ DAILY_COST_LIMIT_USD: str = os.getenv("DAILY_COST_LIMIT_USD", "1.00")
 # Path to the SQLite deduplication database.
 DB_PATH: str = os.getenv("DB_PATH", "data/seen_items.db")
 
+# ── Deep dive ─────────────────────────────────────────────────────────────────
+# Minimum severity score to trigger an autonomous deep dive.
+DEEP_DIVE_MIN_SEVERITY: int = int(os.getenv("DEEP_DIVE_MIN_SEVERITY", "8"))
+# Max number of deep dives per cycle (highest severity first).
+DEEP_DIVE_MAX_PER_CYCLE: int = int(os.getenv("DEEP_DIVE_MAX_PER_CYCLE", "3"))
+
 # ── Adaptive polling ───────────────────────────────────────────────────────────
 # Number of high-severity items in a cycle that triggers spike mode.
 SPIKE_TRIGGER_COUNT: int = int(os.getenv("SPIKE_TRIGGER_COUNT", "3"))
