@@ -38,6 +38,9 @@ log = logging.getLogger(__name__)
 # Max characters of article text sent to Claude (keeps tokens predictable)
 _MAX_CONTENT_CHARS = 8_000
 
+# Maximum raw HTTP response body size accepted — prevents memory exhaustion
+_MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MB
+
 # Paywall signal phrases found in page body
 _PAYWALL_PHRASES = [
     "subscribe to read",
@@ -166,10 +169,11 @@ async def _fetch_content(url: str) -> str | None:
         log.warning("Deep dive skipped — unsafe URL: <redacted>")
         return None
 
+    # Generic UA — avoids fingerprinting the agent by name (OWASP A05)
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (compatible; AgenticThreatIntelFeed/1.0; "
-            "+https://github.com)"
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
     }
 
@@ -180,6 +184,13 @@ async def _fetch_content(url: str) -> str | None:
         async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
             for _ in range(max_redirects + 1):
                 resp = await client.get(current_url, headers=headers)
+
+                # Enforce response-size limit before reading body (OWASP A04)
+                content_length = resp.headers.get("content-length")
+                if content_length and int(content_length) > _MAX_RESPONSE_BYTES:
+                    log.warning("Deep dive: response too large (%s bytes), skipping", content_length)
+                    return None
+
                 if resp.status_code in (301, 302, 303, 307, 308):
                     location = resp.headers.get("location", "")
                     if not location:
@@ -200,7 +211,9 @@ async def _fetch_content(url: str) -> str | None:
         log.warning("Deep dive fetch error: %s", type(exc).__name__)
         return None
 
-    text = _extract_text(resp.text)
+    # Safety-net truncation even when Content-Length is absent
+    raw_html = resp.text[:_MAX_RESPONSE_BYTES]
+    text = _extract_text(raw_html)
 
     if _is_paywalled(resp.status_code, text):
         log.info("Deep dive: paywalled or blocked")
@@ -217,8 +230,9 @@ def _call_claude(item: dict, content: str) -> dict | None:
     )
     try:
         response = _client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model=config.CLAUDE_MODEL,
             max_tokens=1024,
+            timeout=60.0,
             system=_DEEP_DIVE_SYSTEM,
             messages=[{"role": "user", "content": user_msg}],
         )

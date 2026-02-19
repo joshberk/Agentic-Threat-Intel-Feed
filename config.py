@@ -17,6 +17,7 @@ def _clamp(value: int, lo: int, hi: int, name: str) -> int:
 
 # ── Anthropic ─────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
 
 # ── Slack (fill in after MVP) ─────────────────────────────────────────────────
 SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")

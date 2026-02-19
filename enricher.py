@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from datetime import date
 
 import anthropic
@@ -160,45 +161,68 @@ def enrich(items: list[dict]) -> list[dict]:
             )
             break
 
-        try:
-            response = _client.messages.create(
-                model="claude-sonnet-4-5-20250929",
-                max_tokens=4096,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": _build_user_prompt(batch)}],
-            )
-            _track_cost(response)
+        # Retry on transient Claude API errors with exponential backoff (OWASP A09)
+        _MAX_RETRIES = 3
+        for attempt in range(_MAX_RETRIES):
+            try:
+                response = _client.messages.create(
+                    model=config.CLAUDE_MODEL,
+                    max_tokens=4096,
+                    timeout=90.0,
+                    system=_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": _build_user_prompt(batch)}],
+                )
+                _track_cost(response)
 
-            raw_text = response.content[0].text
-            cleaned = raw_text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
-            results: list[dict] = json.loads(cleaned)
+                raw_text = response.content[0].text
+                cleaned = raw_text.strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
+                results: list[dict] = json.loads(cleaned)
 
-            for item, result in zip(batch, results):
-                if not _validate_result(result):
-                    log.warning(
-                        "Unexpected schema from Claude for item '%s' — "
-                        "possible injection attempt, dropping item",
-                        item.get("title", "")[:60],
-                    )
-                    continue
-                if result.get("relevant"):
-                    enriched.append({
-                        **item,
-                        "summary":  result.get("summary", ""),
-                        "severity": int(result.get("severity", 0)),
-                        "topics":   result.get("topics", []),
-                    })
+                for item, result in zip(batch, results):
+                    if not _validate_result(result):
+                        log.warning(
+                            "Unexpected schema from Claude for item '%s' — "
+                            "possible injection attempt, dropping item",
+                            item.get("title", "")[:60],
+                        )
+                        continue
+                    if result.get("relevant"):
+                        enriched.append({
+                            **item,
+                            "summary":  result.get("summary", ""),
+                            "severity": int(result.get("severity", 0)),
+                            "topics":   result.get("topics", []),
+                        })
+                break  # success — exit retry loop
 
-        except json.JSONDecodeError as exc:
-            log.error("JSON parse error in batch: %s", exc)
-            for item in batch:
-                enriched.append({**item, "summary": "", "severity": 0, "topics": []})
+            except json.JSONDecodeError as exc:
+                log.error("JSON parse error in batch: %s", exc)
+                for item in batch:
+                    enriched.append({**item, "summary": "", "severity": 0, "topics": []})
+                break  # malformed response — no point retrying
 
-        except Exception as exc:
-            log.error("Claude API error: %s", type(exc).__name__)
-            for item in batch:
-                enriched.append({**item, "summary": "", "severity": 0, "topics": []})
+            except anthropic.RateLimitError:
+                wait = 2 ** attempt * 10  # 10s, 20s, 40s
+                log.warning("Claude rate-limited — retrying in %ds (attempt %d/%d)", wait, attempt + 1, _MAX_RETRIES)
+                time.sleep(wait)
+
+            except anthropic.APIStatusError as exc:
+                if exc.status_code in (500, 503) and attempt < _MAX_RETRIES - 1:
+                    wait = 2 ** attempt * 5  # 5s, 10s
+                    log.warning("Claude API %s — retrying in %ds", exc.status_code, wait)
+                    time.sleep(wait)
+                else:
+                    log.error("Claude API error: %s", exc.status_code)
+                    for item in batch:
+                        enriched.append({**item, "summary": "", "severity": 0, "topics": []})
+                    break
+
+            except Exception as exc:
+                log.error("Claude unexpected error: %s", type(exc).__name__)
+                for item in batch:
+                    enriched.append({**item, "summary": "", "severity": 0, "topics": []})
+                break
 
     return enriched

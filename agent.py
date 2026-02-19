@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import config
 from collector import collect_all
-from deduplicator import filter_new, mark_seen
+from deduplicator import filter_new, mark_seen, prune_old_entries
 from deep_diver import deep_dive
 from enricher import enrich
 from notifier import send_email, send_slack
@@ -136,6 +136,9 @@ async def run_cycle() -> int:
 async def main(once: bool = False) -> None:
     _configure_logging()
     _banner()
+
+    # Prune stale dedup entries once at startup to bound DB growth (OWASP A04)
+    prune_old_entries()
 
     if not config.ANTHROPIC_API_KEY:
         log.error("ANTHROPIC_API_KEY is not set. Add it to your .env file.")

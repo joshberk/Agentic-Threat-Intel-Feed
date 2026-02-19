@@ -62,12 +62,48 @@ def _nvd_cvss_score(cve: dict) -> float | None:
 
 
 # ── Fetchers ──────────────────────────────────────────────────────────────────
+async def _get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    source: str = "",
+    max_retries: int = 2,
+    **kwargs,
+) -> httpx.Response | None:
+    """
+    GET with exponential backoff on 429 / 5xx responses (OWASP A09).
+    Returns None if all retries are exhausted.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            resp = await client.get(url, **kwargs)
+            if resp.status_code in (429, 500, 503) and attempt < max_retries:
+                wait = 2 ** attempt * 2  # 2s, 4s
+                log.warning(
+                    "HTTP %s from %s — retrying in %ds (attempt %d/%d)",
+                    resp.status_code, source or "<redacted>", wait, attempt + 1, max_retries + 1,
+                )
+                await asyncio.sleep(wait)
+                continue
+            return resp
+        except httpx.TimeoutException:
+            if attempt < max_retries:
+                wait = 2 ** attempt * 2
+                log.warning("Timeout fetching %s — retrying in %ds", source, wait)
+                await asyncio.sleep(wait)
+            else:
+                raise
+    return None
+
+
 async def fetch_rss_feeds(client: httpx.AsyncClient) -> list[dict]:
     """Fetch RSS feeds sequentially with a short delay to avoid hammering sources."""
     items: list[dict] = []
     for feed in RSS_FEEDS:
         try:
-            resp = await client.get(feed["url"], timeout=15)
+            resp = await _get_with_retry(client, feed["url"], source=feed["name"], timeout=15)
+            if resp is None:
+                continue
             resp.raise_for_status()
             parsed = feedparser.parse(resp.text)
             for entry in parsed.entries[:RSS_ITEMS_PER_FEED]:
@@ -98,7 +134,9 @@ async def fetch_nvd_cves(client: httpx.AsyncClient) -> list[dict]:
     if config.NVD_API_KEY:
         headers["apiKey"] = config.NVD_API_KEY
     try:
-        resp = await client.get(url, headers=headers, timeout=20)
+        resp = await _get_with_retry(client, url, source="NVD", headers=headers, timeout=20)
+        if resp is None:
+            return items
         resp.raise_for_status()
         data = resp.json()
         for vuln in data.get("vulnerabilities", [])[:20]:
@@ -134,7 +172,9 @@ async def fetch_cisa_kev(client: httpx.AsyncClient) -> list[dict]:
     items: list[dict] = []
     url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
     try:
-        resp  = await client.get(url, timeout=20)
+        resp = await _get_with_retry(client, url, source="CISA KEV", timeout=20)
+        if resp is None:
+            return items
         resp.raise_for_status()
         vulns = resp.json().get("vulnerabilities", [])
         # Most recently added first
