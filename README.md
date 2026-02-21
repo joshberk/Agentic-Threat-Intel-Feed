@@ -40,7 +40,7 @@ Orchestrated by `agent.py` which runs the pipeline in an async loop (locally) or
 
 ```bash
 git clone <your-repo-url>
-cd AI-Agents
+cd Agentic-Threat-Intel-Feed
 
 python3 -m venv venv
 source venv/bin/activate
@@ -112,6 +112,7 @@ The dedup database is persisted between runs via GitHub Actions cache.
 ├── config.py             # Centralized configuration from .env
 ├── deduplicator.py       # SQLite-backed dedup (SHA-256 fingerprinting)
 ├── enricher.py           # Claude AI triage with cost tracking
+├── deep_diver.py         # Autonomous deep-dive analysis for high-severity items
 ├── notifier.py           # Slack webhook + email digest delivery
 ├── requirements.txt      # Python dependencies
 ├── .env.example          # Template for environment variables
